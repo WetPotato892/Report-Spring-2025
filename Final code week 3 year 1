@@ -123,6 +123,8 @@ def shapes(frame):
         circ = (4 * math.pi * cv2.contourArea(best)) / (peri*peri)
         if circ > 0.8:
             shape = "circle"
+        else: 
+            shape = "partial circle"
 
     M = cv2.moments(best)
     if M["m00"] != 0:
