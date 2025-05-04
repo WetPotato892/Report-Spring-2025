@@ -2,64 +2,67 @@ import cv2
 import numpy as np
 import math
 
-# HSV bounds for blue-arrow detection
-arrow_minHSV = np.array([100, 100, 50])
-arrow_maxHSV = np.array([140, 255, 255])
+# HSV colour thresholds for detecting blue arrows
+blue_arrow_lower = np.array([100, 100, 50])
+blue_arrow_upper = np.array([140, 255, 255])
 
-def detect_arrow(cnt, frame, hsv_frame):
+def identify_arrow(contour, image_bgr, image_hsv):
     """
-    Given a contour, the BGR frame, and its HSV version,
-    returns one of "arrow (right|down|left|up)" if a blue arrow is detected,
-    otherwise returns None.
+    Analyses a contour and returns the direction of a blue arrow if found.
+    Possible return values: 'arrow right', 'arrow down', 'arrow left', 'arrow up'.
+    Returns None if the contour doesn't match a blue arrow.
     """
-    # Only consider roughly quadrilateral-to-octagonal shapes
-    peri = cv2.arcLength(cnt, True)
-    area = cv2.contourArea(cnt)
-    if area < 500 or len(cnt) < 4:
-        return None
-    epsilon = 0.03 * peri if area > 1000 else 0.05 * peri
-    approx = cv2.approxPolyDP(cnt, epsilon, True)
-    if not (4 <= len(approx) <= 8):
+    # Filter small or poorly defined shapes
+    contour_length = cv2.arcLength(contour, True)
+    contour_area = cv2.contourArea(contour)
+    if contour_area < 500 or len(contour) < 4:
         return None
 
-    # Mask for blue region and clean it up
-    maskHSV = cv2.inRange(hsv_frame, arrow_minHSV, arrow_maxHSV)
-    kernel = np.ones((5, 5), np.uint8)
-    maskHSV = cv2.morphologyEx(maskHSV, cv2.MORPH_CLOSE, kernel)
-    maskHSV = cv2.morphologyEx(maskHSV, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-
-    # Crop to contour bounding box
-    x, y, w, h = cv2.boundingRect(cnt)
-    x, y = max(x - 10, 0), max(y - 10, 0)
-    w = min(w + 20, frame.shape[1] - x)
-    h = min(h + 20, frame.shape[0] - y)
-    region = maskHSV[y:y + h, x:x + w]
-    if region.size == 0:
+    # Approximate contour shape
+    tolerance = 0.03 * contour_length if contour_area > 1000 else 0.05 * contour_length
+    poly_shape = cv2.approxPolyDP(contour, tolerance, True)
+    if not (4 <= len(poly_shape) <= 8):
         return None
 
-    # Find the two strongest corners in the blurred mask
-    blur = cv2.GaussianBlur(region, (9, 9), 0)
-    corners = cv2.goodFeaturesToTrack(blur, maxCorners=2, qualityLevel=0.7, minDistance=15)
-    if corners is None or len(corners) < 2:
+    # Create mask to isolate blue regions
+    blue_mask = cv2.inRange(image_hsv, blue_arrow_lower, blue_arrow_upper)
+    close_kernel = np.ones((5, 5), np.uint8)
+    open_kernel = np.ones((3, 3), np.uint8)
+    blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, close_kernel)
+    blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, open_kernel)
+
+    # Extract region of interest around the contour
+    bx, by, bw, bh = cv2.boundingRect(contour)
+    bx, by = max(bx - 10, 0), max(by - 10, 0)
+    bw = min(bw + 20, image_bgr.shape[1] - bx)
+    bh = min(bh + 20, image_bgr.shape[0] - by)
+    roi_mask = blue_mask[by:by + bh, bx:bx + bw]
+    if roi_mask.size == 0:
         return None
 
-    # Compute the mid-point of the two corners
-    corners = np.int0(corners).reshape(-1, 2)
-    (x0, y0), (x1, y1) = corners + [x, y]
-    mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+    # Enhance and locate key points
+    roi_blurred = cv2.GaussianBlur(roi_mask, (9, 9), 0)
+    points = cv2.goodFeaturesToTrack(roi_blurred, maxCorners=2, qualityLevel=0.7, minDistance=15)
+    if points is None or len(points) < 2:
+        return None
 
-    # Compute center of the contour
-    (cx, cy), _ = cv2.minEnclosingCircle(cnt)
+    # Get arrowhead and tail points
+    points = np.int0(points).reshape(-1, 2)
+    (px1, py1), (px2, py2) = points + [bx, by]
+    midpoint_x, midpoint_y = (px1 + px2) / 2, (py1 + py2) / 2
 
-    # Compute angle from center to midpoint
-    angle = math.degrees(math.atan2(my - cy, mx - cx))
+    # Find center of contour
+    (center_x, center_y), _ = cv2.minEnclosingCircle(contour)
+
+    # Compute direction angle
+    direction_angle = math.degrees(math.atan2(midpoint_y - center_y, midpoint_x - center_x))
 
     # Classify direction
-    if -45 <= angle < 45:
+    if -45 <= direction_angle < 45:
         return "arrow right"
-    elif 45 <= angle < 135:
+    elif 45 <= direction_angle < 135:
         return "arrow down"
-    elif angle >= 135 or angle <= -135:
+    elif direction_angle >= 135 or direction_angle <= -135:
         return "arrow left"
     else:
         return "arrow up"
